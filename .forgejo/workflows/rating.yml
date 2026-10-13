@@ -1,0 +1,57 @@
+name: Update rating.png
+
+on:
+  schedule:
+    - cron: "17 3 * * *"          # UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ratingGraph.py
+      - .forgejo/workflows/rating.yml
+
+permissions:
+  contents: write
+
+env:
+  CF_HANDLE: tgyt.dev
+
+jobs:
+  rating:
+    runs-on: docker             
+    timeout-minutes: 15
+    container:
+      image: python:3.12-slim
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Install git
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates
+
+      - name: Configure git auth
+        run: |
+          git config --global credential.helper \
+            '!f() { echo username=x-access-token; echo password=$GITHUB_TOKEN; }; f'
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check out
+        run: git clone --depth 1 --branch "$GITHUB_REF_NAME" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
+
+      - name: Generate rating.png
+        run: |
+          pip install --no-cache-dir --break-system-packages matplotlib
+          python ratingGraph.py "$CF_HANDLE" rating.png
+
+      - name: Commit and push
+        run: |
+          git config user.name  "forgejo-actions[bot]"
+          git config user.email "forgejo-actions[bot]@users.noreply.${GITHUB_SERVER_URL#http*://}"
+          git add rating.png
+          if git diff --cached --quiet; then
+            echo "rating.png unchanged"
+            exit 0
+          fi
+          git commit -m "Update rating.png ($(date -u +%F)) [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
