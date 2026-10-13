@@ -1,0 +1,47 @@
+# Place this file at: .forgejo/workflows/rating.yml  (inside the "codeforces" repo)
+#
+# Repo layout expected:
+#   ratingGraph.py                    <- the drawing script (repo root)
+#   rating.png                        <- generated & committed by this workflow
+#   rating_history.json               <- generated & committed by this workflow
+#
+# Enable Actions in: Settings -> Repository -> Actions.
+# The auto-provided GITHUB_TOKEN is used to push back to the repo.
+
+name: rating-graph
+
+on:
+  schedule:
+    - cron: "30 3 * * *"   # daily 03:30 UTC - after Codeforces updates ratings
+  workflow_dispatch:       # adds a manual "Run workflow" button
+
+jobs:
+  update:
+    runs-on: docker                 # runner label (Codeberg default; match your runner)
+    container:
+      image: python:3.12-slim       # job image
+    steps:
+      - name: Install git
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+
+      - name: Checkout (restores last committed rating_history.json)
+        uses: actions/checkout@v4
+
+      - name: Install matplotlib
+        run: python3 -m pip install --no-cache-dir --break-system-packages matplotlib
+
+      - name: Draw graph
+        env:
+          HANDLE: your_handle        # <- put your Codeforces handle here
+        run: python3 ratingGraph.py "$HANDLE" rating.png
+
+      - name: Commit and push graph + history
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auto-provided repo token
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name  "rating-bot"
+          git config user.email "rating-bot@noreply.${GITHUB_SERVER_URL#*://}"
+          git add rating.png rating_history.json
+          git diff --cached --quiet || git commit -m "update rating graph"
+          git push "https://${GITHUB_ACTOR}:${TOKEN}@${GITHUB_SERVER_URL#*://}/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME:-main}"
