@@ -1,14 +1,25 @@
 # Place this file at: .forgejo/workflows/rating.yml  (inside the "codeforces" repo)
 #
-# Repo layout expected:
-#   ratingGraph.py                    <- the drawing script (repo root)
-#   rating.png                        <- generated & committed by this workflow
-#   rating_history.json               <- generated & committed by this workflow
+# Nodeless on purpose: no `uses:` JS actions (they need node inside the job
+# image). Plain shell + git only.
 #
-# Nodeless on purpose: no `uses:` JS actions (actions/checkout needs a node
-# binary that minimal images lack). Everything is plain shell + git.
+# URL HANDLING - read this if checkout/push fails:
+# The clone/push URL is built from $GITHUB_SERVER_URL exactly as the runner
+# registered it, KEEPING ITS SCHEME. A plain-HTTP instance (http://localhost:3000)
+# is cloned over http; a TLS instance over https. The earlier hard-coded
+# "https://" prefix caused this failure on plain-HTTP instances:
+#   fatal: unable to access 'https://localhost:3000/TGYT-Dev/codeforces.git/':
+#   GnuTLS, handshake failed: An unexpected TLS packet was received
+# (git spoke TLS to a plaintext HTTP server - if you get this, the address is
+#  reachable and only the scheme was wrong; update the committed workflow).
 #
-# Enable Actions in: Settings -> Repository -> Actions.
+# Only if the job container cannot reach the instance at $GITHUB_SERVER_URL at
+# all ("connection refused"), set FORGEJO_URL to an address that works from
+# inside the job container:
+#   http://172.17.0.1:3000            Forgejo on the docker host (default bridge)
+#   http://host.docker.internal:3000  host-gateway setups
+#   http://forgejo:3000               Forgejo container on a shared docker network
+#   http://[2001:db8::10]:3000        bare IPv6 address (brackets required)
 
 name: rating-graph
 
@@ -19,9 +30,12 @@ on:
 
 jobs:
   update:
-    runs-on: docker                 # runner label (Codeberg default; match your runner)
+    runs-on: docker                 # runner label - match your runner's labels
     container:
       image: python:3.12-slim       # job image
+    env:
+      FORGEJO_URL: ""               # optional override; normally leave empty
+
     steps:
       - name: Install git
         run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git
@@ -33,9 +47,15 @@ jobs:
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auto-provided repo token
         run: |
+          # Use the explicit override if set, else the runner's own instance
+          # URL - verbatim, so the scheme (http vs https) is always correct.
+          BASE="${FORGEJO_URL:-${GITHUB_SERVER_URL%/}}"
+          BASE="${BASE%/}"
+          SCHEME="${BASE%%://*}"     # http or https - whatever the instance serves
+          echo "remote: ${SCHEME}://${GITHUB_ACTOR}@${BASE#*://}/${GITHUB_REPOSITORY}.git (token hidden)"
           git config --global --add safe.directory "$PWD"
           git init -q
-          git remote add origin "https://${GITHUB_ACTOR}:${TOKEN}@${GITHUB_SERVER_URL#*://}/${GITHUB_REPOSITORY}.git"
+          git remote add origin "${SCHEME}://${GITHUB_ACTOR}:${TOKEN}@${BASE#*://}/${GITHUB_REPOSITORY}.git"
           git fetch -q --depth=1 origin "${GITHUB_REF_NAME:-main}"
           git checkout -qf FETCH_HEAD
 
@@ -47,7 +67,7 @@ jobs:
       - name: Commit and push graph + history
         run: |
           git config user.name  "rating-bot"
-          git config user.email "rating-bot@noreply.${GITHUB_SERVER_URL#*://}"
+          git config user.email "rating-bot@forgejo.local"
           git add rating.png rating_history.json
           git diff --cached --quiet || git commit -q -m "update rating graph"
           git push -q origin "HEAD:${GITHUB_REF_NAME:-main}"
